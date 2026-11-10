@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+*/node_modules/
+
+# Environment Variables & Secrets
+.env
+.env.local
+.env.*.local
+server/.env
+client/.env
+
+# Local database storage & temp data
+server/data/
+server/data/pgdata/
+*.sqlite
+*.log
+
+# Build Outputs
+client/dist/
+client/dist-ssr/
+*.tsbuildinfo
+
+# Editor and OS Files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
