@@ -6,6 +6,7 @@ A full-stack healthcare web application designed for diabetic and health-conscio
 
 ## 📋 Table of Contents
 - [Project Overview](#project-overview)
+- [Screenshots](#screenshots)
 - [Key Features](#key-features)
 - [Technology Stack](#technology-stack)
 - [Prerequisites](#prerequisites)
@@ -34,6 +35,19 @@ A full-stack healthcare web application designed for diabetic and health-conscio
 The system provides instant statistical summaries (Daily Highest, Lowest, and Average readings), period analytics (Month-to-Date and Previous Calendar Month), and monthly visualization charts. Strict validation and relational constraints ensure patients cannot input impossible readings, log future dates, or create duplicate entries for the same meal slot on any single day.
 
 > **Disclaimer**: This application is intended for personal health journaling and tracking. It is not an FDA-approved medical device and does not provide clinical diagnosis or medical prescriptions.
+
+---
+
+## 📸 Screenshots
+
+### Dashboard & Quick Reading Entry
+![Sweety Dashboard](docs/screenshots/dashboard.png)
+
+### Readings History & Time-Slot Filtering
+![Sweety Readings History](docs/screenshots/readings-history.png)
+
+### Analytics & Clinical Reports
+![Sweety Analytics and Reports](docs/screenshots/analytics-reports.png)
 
 ---
 
