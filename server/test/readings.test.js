@@ -1,6 +1,6 @@
-import { describe, it, before } from 'node:test';
+import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { getTestApp } from './helpers.js';
+import { getTestApp, teardownTestApp } from './helpers.js';
 import { getTodayString } from '../src/validation.js';
 
 describe('Glucose Readings API Tests', () => {
@@ -38,6 +38,10 @@ describe('Glucose Readings API Tests', () => {
       });
     tokenUserB = resB.body.token;
     userBId = resB.body.user.id;
+  });
+
+  after(async () => {
+    await teardownTestApp();
   });
 
   it('successfully creates a valid glucose reading', async () => {

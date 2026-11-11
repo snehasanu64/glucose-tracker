@@ -1,6 +1,6 @@
-import { describe, it, before } from 'node:test';
+import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { getTestApp } from './helpers.js';
+import { getTestApp, teardownTestApp } from './helpers.js';
 import { getTodayString } from '../src/validation.js';
 
 describe('Reports API Tests', () => {
@@ -9,6 +9,10 @@ describe('Reports API Tests', () => {
   let token;
   let otherToken;
   const today = getTodayString();
+
+  after(async () => {
+    await teardownTestApp();
+  });
 
   before(async () => {
     const setup = await getTestApp();

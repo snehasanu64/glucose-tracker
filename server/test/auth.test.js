@@ -1,9 +1,9 @@
-import { describe, it, before } from 'node:test';
+import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { getJwtSecret } from '../src/auth.js';
-import { getTestApp } from './helpers.js';
+import { getTestApp, teardownTestApp } from './helpers.js';
 
 describe('User Authentication & Authorization Tests', () => {
   let req;
@@ -13,6 +13,10 @@ describe('User Authentication & Authorization Tests', () => {
     const setup = await getTestApp();
     req = setup.request;
     pool = setup.pool;
+  });
+
+  after(async () => {
+    await teardownTestApp();
   });
 
   it('registers a new user with name, email and password', async () => {

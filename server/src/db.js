@@ -3,48 +3,193 @@ import { PGlite } from '@electric-sql/pglite';
 import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
+import { fileURLToPath } from 'url';
 
-dotenv.config();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const serverEnvPath = path.resolve(__dirname, '../.env');
+
+dotenv.config({ path: serverEnvPath });
 
 const { Pool: PgPool } = pg;
+
+function assertSafeIdentifier(name, label = 'schema') {
+  if (!name || !/^[a-z_][a-z0-9_]*$/i.test(name)) {
+    throw new Error(`Invalid PostgreSQL ${label} name.`);
+  }
+  return name;
+}
+
+function sanitizeConnectionError(err, connectionString) {
+  let msg = err?.message ? String(err.message) : 'Unknown database connection error.';
+  if (connectionString) {
+    msg = msg.split(connectionString).join('[REDACTED_DATABASE_URL]');
+  }
+  msg = msg.replace(/postgres(?:ql)?:\/\/[^\s@]+@/gi, 'postgresql://***:***@');
+  return msg;
+}
+
+function buildPgPoolConfig(connectionString, { isTestMode = false } = {}) {
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(connectionString);
+  } catch {
+    throw new Error(
+      'Invalid DATABASE_URL format. Check host, port, and URL-encode any special characters in your password.'
+    );
+  }
+
+  const host = parsedUrl.hostname.toLowerCase();
+  const isLocalHost = host === 'localhost' || host === '127.0.0.1' || host === '::1';
+  const sslParam = parsedUrl.searchParams.get('sslmode')?.toLowerCase();
+  const envSsl = process.env.DATABASE_SSL?.trim().toLowerCase();
+
+  let useSsl;
+  if (envSsl === 'false' || envSsl === '0' || sslParam === 'disable') {
+    useSsl = false;
+  } else if (envSsl === 'true' || envSsl === '1' || sslParam || !isLocalHost) {
+    useSsl = true;
+  } else {
+    useSsl = false;
+  }
+
+  // Strip URL SSL query parameters so pg-connection-string does not override explicit ssl options.
+  parsedUrl.searchParams.delete('sslmode');
+  parsedUrl.searchParams.delete('ssl');
+  parsedUrl.searchParams.delete('uselibpqcompat');
+
+  const timeoutRaw = Number(process.env.DATABASE_CONNECT_TIMEOUT_MS || 10000);
+  const connectionTimeoutMillis = Number.isFinite(timeoutRaw) && timeoutRaw > 0 ? timeoutRaw : 10000;
+  const maxRaw = Number(process.env.DATABASE_POOL_MAX || (isTestMode ? 2 : 10));
+  const max = Number.isFinite(maxRaw) && maxRaw > 0 ? maxRaw : (isTestMode ? 2 : 10);
+
+  const config = {
+    connectionString: parsedUrl.toString(),
+    connectionTimeoutMillis,
+    max
+  };
+
+  if (useSsl) {
+    const rejectUnauthorized =
+      process.env.DATABASE_SSL_REJECT_UNAUTHORIZED === 'true' ||
+      sslParam === 'verify-full';
+    config.ssl = { rejectUnauthorized };
+  }
+
+  return { config, useSsl, host };
+}
+
+function isTestExecution() {
+  return (
+    process.env.NODE_ENV === 'test' ||
+    process.execArgv.some(arg => arg.includes('--test')) ||
+    process.argv.some(arg => arg.includes('--test') || arg.includes('.test.'))
+  );
+}
 
 class DbClient {
   constructor() {
     this.mode = 'uninitialized';
+    this.schema = 'public';
+    this.isIsolatedTestSchema = false;
     this.pgPool = null;
     this.pgliteInstance = null;
+    this.initializedClients = new WeakSet();
+    this.initPromise = null;
   }
 
-  async init() {
+  async init(options = {}) {
     if (this.mode !== 'uninitialized') return;
+    if (this.initPromise) return this.initPromise;
 
-    const connectionString = process.env.DATABASE_URL;
+    this.initPromise = this._initInternal(options);
+    try {
+      await this.initPromise;
+    } finally {
+      this.initPromise = null;
+    }
+  }
+
+  async _initInternal({ applySchema = true } = {}) {
+    const isTestMode = isTestExecution();
+    const forceEmbedded = ['1', 'true'].includes(String(process.env.FORCE_EMBEDDED_DB || '').toLowerCase());
+    const allowFallback = ['1', 'true'].includes(
+      String(process.env.ALLOW_EMBEDDED_DB_FALLBACK || '').toLowerCase()
+    );
+
+    const hasSeparateTestDb = isTestMode && Boolean(process.env.TEST_DATABASE_URL?.trim());
+    const connectionString = hasSeparateTestDb
+      ? process.env.TEST_DATABASE_URL.trim()
+      : process.env.DATABASE_URL?.trim();
+
+    let targetSchema = 'public';
+    let isolatedTestSchema = false;
+
+    if (isTestMode && connectionString && !hasSeparateTestDb) {
+      const baseTestSchema = assertSafeIdentifier(
+        process.env.TEST_SCHEMA?.trim() || 'sweety_test',
+        'TEST_SCHEMA'
+      );
+      if (baseTestSchema.toLowerCase() === 'public') {
+        throw new Error('TEST_SCHEMA cannot be "public" when sharing DATABASE_URL.');
+      }
+      targetSchema = `${baseTestSchema}_${process.pid}`;
+      isolatedTestSchema = true;
+    } else if (!isTestMode && process.env.DATABASE_SCHEMA?.trim()) {
+      targetSchema = assertSafeIdentifier(process.env.DATABASE_SCHEMA.trim(), 'DATABASE_SCHEMA');
+    }
+
     let connectedToPostgres = false;
 
-    if (connectionString && !process.env.FORCE_EMBEDDED_DB) {
-      const testPool = new PgPool({
-        connectionString,
-        connectionTimeoutMillis: 2000
-      });
+    if (connectionString && !forceEmbedded) {
+      const { config, useSsl, host } = buildPgPoolConfig(connectionString, { isTestMode });
+      const candidatePool = new PgPool(config);
+
+      let testClient;
       try {
-        await testPool.query('SELECT 1');
-        this.pgPool = testPool;
+        testClient = await candidatePool.connect();
+        await testClient.query('SELECT 1');
+
+        if (targetSchema !== 'public') {
+          if (applySchema) {
+            await testClient.query(`CREATE SCHEMA IF NOT EXISTS "${targetSchema}"`);
+          }
+          await testClient.query(`SET search_path TO "${targetSchema}"`);
+          this.initializedClients.add(testClient);
+        }
+
+        this.pgPool = candidatePool;
         this.mode = 'postgres';
+        this.schema = targetSchema;
+        this.isIsolatedTestSchema = isolatedTestSchema;
         connectedToPostgres = true;
-        console.log('Connected to PostgreSQL server successfully.');
+        console.log(
+          `Connected to PostgreSQL server (${host}, SSL=${useSsl ? 'enabled' : 'disabled'}, schema=${targetSchema}).`
+        );
       } catch (err) {
-        await testPool.end().catch(() => {});
-        console.warn('Could not connect to external PostgreSQL server configured in DATABASE_URL:', err.message);
-        console.warn('Falling back to local embedded PostgreSQL engine (PGlite)...');
+        if (testClient) {
+          try {
+            testClient.release(true);
+          } catch {
+            // ignore release cleanup error
+          }
+        }
+        await candidatePool.end().catch(() => {});
+
+        const sanitizedError = sanitizeConnectionError(err, connectionString);
+        if (!allowFallback) {
+          throw new Error(`Failed to connect to PostgreSQL database (${host}): ${sanitizedError}`);
+        }
+        console.warn(`PostgreSQL connection failed (${host}): ${sanitizedError}`);
+        console.warn('Falling back to local embedded PostgreSQL engine (PGlite) because ALLOW_EMBEDDED_DB_FALLBACK is enabled...');
+      } finally {
+        if (connectedToPostgres && testClient) {
+          testClient.release();
+        }
       }
     }
 
     if (!connectedToPostgres) {
-      const isTestMode =
-        process.env.NODE_ENV === 'test' ||
-        process.execArgv.some(arg => arg.includes('--test')) ||
-        process.argv.some(arg => arg.includes('--test') || arg.includes('.test.'));
-
       const dataDir = isTestMode
         ? undefined
         : path.resolve(process.cwd(), 'data', 'pgdata');
@@ -55,10 +200,14 @@ class DbClient {
 
       this.pgliteInstance = new PGlite(dataDir);
       this.mode = 'pglite';
+      this.schema = 'public';
+      this.isIsolatedTestSchema = false;
       console.log(`Using embedded PostgreSQL engine (${dataDir ? 'persisted at ' + dataDir : 'in-memory'}).`);
     }
 
-    await this.applySchema();
+    if (applySchema) {
+      await this.applySchema();
+    }
   }
 
   async applySchema() {
@@ -84,7 +233,7 @@ class DbClient {
     `;
 
     if (this.mode === 'postgres') {
-      await this.pgPool.query(ddl);
+      await this.query(ddl);
     } else {
       await this.pgliteInstance.exec(ddl);
     }
@@ -96,11 +245,28 @@ class DbClient {
     }
 
     if (this.mode === 'postgres') {
-      const res = await this.pgPool.query(text, params);
-      return {
-        rows: res.rows,
-        rowCount: res.rowCount
-      };
+      if (this.schema === 'public') {
+        const res = await this.pgPool.query(text, params);
+        return {
+          rows: res.rows,
+          rowCount: res.rowCount
+        };
+      }
+
+      const client = await this.pgPool.connect();
+      try {
+        if (!this.initializedClients.has(client)) {
+          await client.query(`SET search_path TO "${this.schema}"`);
+          this.initializedClients.add(client);
+        }
+        const res = await client.query(text, params);
+        return {
+          rows: res.rows,
+          rowCount: res.rowCount
+        };
+      } finally {
+        client.release();
+      }
     } else {
       const res = await this.pgliteInstance.query(text, params);
       return {
@@ -114,19 +280,46 @@ class DbClient {
     return this.mode;
   }
 
+  getSchema() {
+    return this.schema;
+  }
+
+  async cleanupIsolatedTestSchema() {
+    if (
+      this.mode === 'postgres' &&
+      this.pgPool &&
+      this.isIsolatedTestSchema &&
+      this.schema &&
+      this.schema !== 'public'
+    ) {
+      const client = await this.pgPool.connect();
+      try {
+        await client.query('SET search_path TO public');
+        await client.query(`DROP SCHEMA IF EXISTS "${this.schema}" CASCADE`);
+      } finally {
+        client.release();
+      }
+    }
+  }
+
   async end() {
     if (this.pgPool) {
       await this.pgPool.end();
+      this.pgPool = null;
     }
     if (this.pgliteInstance) {
       await this.pgliteInstance.close?.();
+      this.pgliteInstance = null;
     }
+    this.initializedClients = new WeakSet();
+    this.schema = 'public';
+    this.isIsolatedTestSchema = false;
     this.mode = 'uninitialized';
   }
 }
 
 export const pool = new DbClient();
 
-export async function initDb() {
-  await pool.init();
+export async function initDb(options = {}) {
+  await pool.init(options);
 }

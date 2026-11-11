@@ -14,3 +14,11 @@ export async function getTestApp() {
     pool
   };
 }
+
+export async function teardownTestApp() {
+  if (initialized) {
+    await pool.cleanupIsolatedTestSchema();
+    await pool.end();
+    initialized = false;
+  }
+}

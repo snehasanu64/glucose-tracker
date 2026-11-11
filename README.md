@@ -122,8 +122,8 @@ Ensure you have the following installed on your machine:
    psql -U postgres -d sweety_glucose -f server/schema.sql
    ```
 
-### Option B: Automatic Embedded PostgreSQL Fallback (Zero Config)
-If an external PostgreSQL instance is not configured or not running locally, the backend automatically activates an embedded PostgreSQL WASM engine (`PGlite`), persisting data to `server/data/pgdata`. This allows full local testing, development, and grading without needing a PostgreSQL daemon running on port 5432.
+### Option B: Embedded PostgreSQL Fallback (Local Offline Mode Only)
+When `DATABASE_URL` is not configured (or when `FORCE_EMBEDDED_DB=true` is set), the backend uses an embedded PostgreSQL WASM engine (`PGlite`), persisting data to `server/data/pgdata` (or in-memory during tests). When `DATABASE_URL` **is** configured, the server connects strictly to that PostgreSQL database and reports connection errors explicitly rather than silently switching to PGlite (unless `ALLOW_EMBEDDED_DB_FALLBACK=true` is explicitly enabled).
 
 ### PostgreSQL Schema Overview
 ```sql
@@ -163,6 +163,11 @@ Contents of `server/.env`:
 ```env
 PORT=5000
 DATABASE_URL=postgresql://postgres:your_password@localhost:5432/sweety_glucose
+DATABASE_SSL=false
+# For Supabase Session Pooler (SSL required; percent-encode any special password chars like # as %23):
+# DATABASE_URL=postgresql://postgres.<project-ref>:your_password@aws-0-<region>.pooler.supabase.com:5432/postgres
+# DATABASE_SSL=true
+# TEST_SCHEMA=sweety_test
 JWT_SECRET=replace_with_a_long_random_secret
 CLIENT_ORIGIN=http://localhost:5173
 ```
@@ -249,7 +254,7 @@ npm test
 ℹ fail 0
 ```
 
-> Note: Automated tests default to the in-memory embedded PGlite engine so they can run deterministically without mutating a local database. Set `DATABASE_URL` (without `FORCE_EMBEDDED_DB`) to run against an external PostgreSQL server.
+> Note: When `DATABASE_URL` is configured, `npm test` automatically runs each test suite inside its own isolated temporary PostgreSQL schema (`${TEST_SCHEMA}_<pid>`, defaulting to `sweety_test_<pid>`, or `TEST_DATABASE_URL` if provided) and drops only that temporary schema in teardown so `public` data is never modified. If `DATABASE_URL` is unset (or `FORCE_EMBEDDED_DB=true`), tests run against in-memory PGlite.
 
 ---
 
@@ -301,7 +306,7 @@ All endpoints accept and return JSON. Authenticated endpoints require the header
 - **Modular Backend Architecture**: Clear separation of database connection pooling (`db.js`), route handlers (`/routes`), validation schemas (`validation.js`), and auth middleware (`auth.js`).
 - **Data Integrity & Consistency**: Enforces integrity at the database layer with check constraints (`value BETWEEN 40 AND 600`) and unique composite indexes (`UNIQUE(user_id, reading_date, slot)`).
 - **Timezone Safety**: Dates are stored in standard SQL `DATE` format (`YYYY-MM-DD`), preventing timezone shifts from altering patient calendar dates.
-- **Fail-safe Database Pooling**: Automatically attempts to connect to PostgreSQL at `DATABASE_URL`; if absent or unavailable, smoothly transitions to embedded engine mode so that local tests and development never block.
+- **Explicit PostgreSQL Connectivity**: Connects via `pg.Pool` (with SSL support via `DATABASE_SSL` / remote host detection and `10000ms` connection timeout) whenever `DATABASE_URL` is configured without silent fallback to embedded storage. Isolated test schemas (`TEST_SCHEMA`) protect production `public` tables during automated tests.
 
 ---
 

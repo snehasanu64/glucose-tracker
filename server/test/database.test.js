@@ -1,6 +1,6 @@
-import { describe, it, before } from 'node:test';
+import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { getTestApp } from './helpers.js';
+import { getTestApp, teardownTestApp } from './helpers.js';
 import { runSeed } from '../src/seed.js';
 
 describe('Database Schema, Constraints, Cascade & Seed Tests', () => {
@@ -11,11 +11,15 @@ describe('Database Schema, Constraints, Cascade & Seed Tests', () => {
     pool = setup.pool;
   });
 
+  after(async () => {
+    await teardownTestApp();
+  });
+
   it('creates users and readings tables and user-date index', async () => {
     const tables = await pool.query(`
       SELECT tablename
       FROM pg_tables
-      WHERE schemaname = 'public' AND tablename IN ('users', 'readings')
+      WHERE schemaname = current_schema() AND tablename IN ('users', 'readings')
       ORDER BY tablename
     `);
     assert.deepEqual(
@@ -26,7 +30,7 @@ describe('Database Schema, Constraints, Cascade & Seed Tests', () => {
     const indexes = await pool.query(`
       SELECT indexname
       FROM pg_indexes
-      WHERE schemaname = 'public' AND indexname = 'readings_user_date_idx'
+      WHERE schemaname = current_schema() AND indexname = 'readings_user_date_idx'
     `);
     assert.equal(indexes.rows.length, 1);
   });
