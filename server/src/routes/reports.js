@@ -96,7 +96,7 @@ router.get('/previous-month', async (req, res) => {
 
     const prevMonthFormatted = String(prevMonth).padStart(2, '0');
     const start = `${prevYear}-${prevMonthFormatted}-01`;
-    const lastDayNumber = new Date(year, month - 1, 0).getDate();
+    const lastDayNumber = new Date(Date.UTC(year, month - 1, 0)).getUTCDate();
     const end = `${prevYear}-${prevMonthFormatted}-${String(lastDayNumber).padStart(2, '0')}`;
 
     await computeReport(req, res, start, end, false);

@@ -53,45 +53,82 @@ router.get('/', async (req, res) => {
   }
 });
 
+async function checkDailyQuotaAndSlot(tx, { userId, date, normalizedSlot, excludeReadingId = null }) {
+  const countSql = excludeReadingId === null
+    ? 'SELECT COUNT(*)::int AS count FROM readings WHERE user_id = $1 AND reading_date = $2'
+    : 'SELECT COUNT(*)::int AS count FROM readings WHERE user_id = $1 AND reading_date = $2 AND id <> $3';
+  const countParams = excludeReadingId === null
+    ? [userId, date]
+    : [userId, date, excludeReadingId];
+
+  const countRes = await tx.query(countSql, countParams);
+  if (countRes.rows[0].count >= 4) {
+    return { status: 400, payload: { error: 'You can add only 4 readings per day.' } };
+  }
+
+  const dupSql = excludeReadingId === null
+    ? 'SELECT id FROM readings WHERE user_id = $1 AND reading_date = $2 AND slot = $3'
+    : 'SELECT id FROM readings WHERE user_id = $1 AND reading_date = $2 AND slot = $3 AND id <> $4';
+  const dupParams = excludeReadingId === null
+    ? [userId, date, normalizedSlot]
+    : [userId, date, normalizedSlot, excludeReadingId];
+
+  const dup = await tx.query(dupSql, dupParams);
+  if (dup.rows.length > 0) {
+    return { status: 409, payload: { error: formatDuplicateSlotError(normalizedSlot) } };
+  }
+
+  return null;
+}
+
 router.post('/', async (req, res) => {
   const error = validateReading(req.body);
   if (error) {
     return res.status(400).json({ error });
   }
 
+  const { date, slot, value } = req.body;
+  const normalizedSlot = SLOT_MAP[slot] || slot;
+  const label = SLOT_LABELS[normalizedSlot] || normalizedSlot;
+
   try {
-    const { date, slot, value } = req.body;
-    const normalizedSlot = SLOT_MAP[slot] || slot;
-    const label = SLOT_LABELS[normalizedSlot] || normalizedSlot;
+    const outcome = await pool.withTransaction(async (tx) => {
+      // Lock the parent user row so concurrent inserts/updates for this user serialize safely.
+      const userLock = await tx.query(
+        'SELECT id FROM users WHERE id = $1 FOR UPDATE',
+        [req.user.id]
+      );
+      if (!userLock.rowCount) {
+        return { status: 401, payload: { error: 'Account not found. Please log in again.' } };
+      }
 
-    const countRes = await pool.query(
-      'SELECT COUNT(*)::int AS count FROM readings WHERE user_id = $1 AND reading_date = $2',
-      [req.user.id, date]
-    );
-    if (countRes.rows[0].count >= 4) {
-      return res.status(400).json({ error: 'You can add only 4 readings per day.' });
-    }
+      const violation = await checkDailyQuotaAndSlot(tx, {
+        userId: req.user.id,
+        date,
+        normalizedSlot
+      });
+      if (violation) {
+        return violation;
+      }
 
-    const dup = await pool.query(
-      'SELECT id FROM readings WHERE user_id = $1 AND reading_date = $2 AND slot = $3',
-      [req.user.id, date, normalizedSlot]
-    );
-    if (dup.rows.length > 0) {
-      return res.status(409).json({ error: formatDuplicateSlotError(normalizedSlot) });
-    }
+      const result = await tx.query(
+        'INSERT INTO readings(user_id, reading_date, slot, value) VALUES($1, $2, $3, $4) RETURNING id, reading_date::text AS date, slot, value',
+        [req.user.id, date, normalizedSlot, Number(value)]
+      );
 
-    const result = await pool.query(
-      'INSERT INTO readings(user_id, reading_date, slot, value) VALUES($1, $2, $3, $4) RETURNING id, reading_date::text AS date, slot, value',
-      [req.user.id, date, normalizedSlot, Number(value)]
-    );
-
-    res.status(201).json({
-      ...result.rows[0],
-      slotLabel: label
+      return {
+        status: 201,
+        payload: {
+          ...result.rows[0],
+          slotLabel: label
+        }
+      };
     });
+
+    res.status(outcome.status).json(outcome.payload);
   } catch (err) {
     if (err.code === '23505') {
-      return res.status(409).json({ error: formatDuplicateSlotError(req.body.slot) });
+      return res.status(409).json({ error: formatDuplicateSlotError(normalizedSlot) });
     }
     console.error('Create reading error:', err);
     res.status(500).json({ error: 'Could not save reading.' });
@@ -109,47 +146,57 @@ router.put('/:id', async (req, res) => {
     return res.status(400).json({ error });
   }
 
+  const { date, slot, value } = req.body;
+  const normalizedSlot = SLOT_MAP[slot] || slot;
+  const label = SLOT_LABELS[normalizedSlot] || normalizedSlot;
+
   try {
-    const { date, slot, value } = req.body;
-    const normalizedSlot = SLOT_MAP[slot] || slot;
-    const label = SLOT_LABELS[normalizedSlot] || normalizedSlot;
+    const outcome = await pool.withTransaction(async (tx) => {
+      // Lock in consistent hierarchy order (users -> readings) to match POST and prevent deadlocks.
+      const userLock = await tx.query(
+        'SELECT id FROM users WHERE id = $1 FOR UPDATE',
+        [req.user.id]
+      );
+      if (!userLock.rowCount) {
+        return { status: 401, payload: { error: 'Account not found. Please log in again.' } };
+      }
 
-    const current = await pool.query(
-      'SELECT id FROM readings WHERE id = $1 AND user_id = $2',
-      [readingId, req.user.id]
-    );
-    if (!current.rowCount) {
-      return res.status(404).json({ error: 'Reading not found.' });
-    }
+      const current = await tx.query(
+        'SELECT id FROM readings WHERE id = $1 AND user_id = $2',
+        [readingId, req.user.id]
+      );
+      if (!current.rowCount) {
+        return { status: 404, payload: { error: 'Reading not found.' } };
+      }
 
-    const countRes = await pool.query(
-      'SELECT COUNT(*)::int AS count FROM readings WHERE user_id = $1 AND reading_date = $2 AND id <> $3',
-      [req.user.id, date, readingId]
-    );
-    if (countRes.rows[0].count >= 4) {
-      return res.status(400).json({ error: 'You can add only 4 readings per day.' });
-    }
+      const violation = await checkDailyQuotaAndSlot(tx, {
+        userId: req.user.id,
+        date,
+        normalizedSlot,
+        excludeReadingId: readingId
+      });
+      if (violation) {
+        return violation;
+      }
 
-    const dup = await pool.query(
-      'SELECT id FROM readings WHERE user_id = $1 AND reading_date = $2 AND slot = $3 AND id <> $4',
-      [req.user.id, date, normalizedSlot, readingId]
-    );
-    if (dup.rows.length > 0) {
-      return res.status(409).json({ error: formatDuplicateSlotError(normalizedSlot) });
-    }
+      const result = await tx.query(
+        'UPDATE readings SET reading_date = $1, slot = $2, value = $3, updated_at = NOW() WHERE id = $4 AND user_id = $5 RETURNING id, reading_date::text AS date, slot, value',
+        [date, normalizedSlot, Number(value), readingId, req.user.id]
+      );
 
-    const result = await pool.query(
-      'UPDATE readings SET reading_date = $1, slot = $2, value = $3, updated_at = NOW() WHERE id = $4 AND user_id = $5 RETURNING id, reading_date::text AS date, slot, value',
-      [date, normalizedSlot, Number(value), readingId, req.user.id]
-    );
-
-    res.json({
-      ...result.rows[0],
-      slotLabel: label
+      return {
+        status: 200,
+        payload: {
+          ...result.rows[0],
+          slotLabel: label
+        }
+      };
     });
+
+    res.status(outcome.status).json(outcome.payload);
   } catch (err) {
     if (err.code === '23505') {
-      return res.status(409).json({ error: formatDuplicateSlotError(req.body.slot) });
+      return res.status(409).json({ error: formatDuplicateSlotError(normalizedSlot) });
     }
     console.error('Update reading error:', err);
     res.status(500).json({ error: 'Could not update reading.' });

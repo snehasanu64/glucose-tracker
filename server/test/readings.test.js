@@ -283,5 +283,63 @@ describe('Glucose Readings API Tests', () => {
       .set('Authorization', `Bearer ${tokenUserB}`);
     assert.equal(deleteB.status, 404, 'User B must not be able to delete User A reading');
   });
+
+  it('keeps daily quota and slot uniqueness consistent under concurrent POST and PUT requests', async () => {
+    const d1 = new Date();
+    d1.setDate(d1.getDate() - 20);
+    const raceDate = `${d1.getFullYear()}-${String(d1.getMonth() + 1).padStart(2, '0')}-${String(d1.getDate()).padStart(2, '0')}`;
+
+    const d2 = new Date();
+    d2.setDate(d2.getDate() - 21);
+    const donorDate = `${d2.getFullYear()}-${String(d2.getMonth() + 1).padStart(2, '0')}-${String(d2.getDate()).padStart(2, '0')}`;
+
+    // Fire 6 concurrent POSTs spanning 4 slots (with intentional duplicates) from 0 readings on raceDate
+    const payloads = [
+      { date: raceDate, slot: 'morning', value: 92 },
+      { date: raceDate, slot: 'morning', value: 93 },
+      { date: raceDate, slot: 'after_breakfast', value: 132 },
+      { date: raceDate, slot: 'after_breakfast', value: 133 },
+      { date: raceDate, slot: 'after_lunch', value: 124 },
+      { date: raceDate, slot: 'after_dinner', value: 118 }
+    ];
+
+    const concurrentPosts = await Promise.all(
+      payloads.map(payload =>
+        req
+          .post('/api/readings')
+          .set('Authorization', `Bearer ${tokenUserB}`)
+          .send(payload)
+      )
+    );
+
+    const created = concurrentPosts.filter(r => r.status === 201);
+    const conflictsOrQuota = concurrentPosts.filter(r => r.status === 409 || r.status === 400);
+    const serverErrors = concurrentPosts.filter(r => r.status >= 500);
+
+    assert.equal(serverErrors.length, 0, 'Concurrent POSTs must never trigger 5xx server errors');
+    assert.equal(created.length, 4, 'Exactly 4 distinct slot readings should be created');
+    assert.equal(conflictsOrQuota.length, 2, 'Concurrent duplicates must be cleanly rejected with 409/400');
+
+    // Create a reading on donorDate and try to concurrently move it onto full raceDate
+    const donorRes = await req
+      .post('/api/readings')
+      .set('Authorization', `Bearer ${tokenUserB}`)
+      .send({ date: donorDate, slot: 'morning', value: 105 });
+    assert.equal(donorRes.status, 201);
+
+    const moveRes = await req
+      .put(`/api/readings/${donorRes.body.id}`)
+      .set('Authorization', `Bearer ${tokenUserB}`)
+      .send({ date: raceDate, slot: 'after_dinner', value: 119 });
+    assert.equal(moveRes.status, 400);
+    assert.equal(moveRes.body.error, 'You can add only 4 readings per day.');
+
+    const stored = await req
+      .get('/api/readings')
+      .query({ date: raceDate })
+      .set('Authorization', `Bearer ${tokenUserB}`);
+    assert.equal(stored.status, 200);
+    assert.equal(stored.body.length, 4, 'Exactly 4 readings must remain stored for raceDate');
+  });
 });
 

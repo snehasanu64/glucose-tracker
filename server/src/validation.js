@@ -54,7 +54,12 @@ export function isValidCalendarDate(dateStr) {
   );
 }
 
-export function validateReading({ date, slot, value }) {
+export function validateReading(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    return 'Please enter valid reading details.';
+  }
+
+  const { date, slot, value } = input;
   if (value === undefined || value === null) {
     return 'Please enter a glucose value.';
   }

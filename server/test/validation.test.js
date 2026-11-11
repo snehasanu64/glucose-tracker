@@ -56,3 +56,12 @@ test('Validation: accepts valid reading for all 4 slots', () => {
   assert.equal(validateReading({ date: today, slot: 'Morning (fasting)', value: 40 }), null);
   assert.equal(validateReading({ date: today, slot: 'After dinner', value: 600 }), null);
 });
+
+test('Validation: handles non-object and inclusive boundary inputs safely', () => {
+  assert.equal(validateReading(null), 'Please enter valid reading details.');
+  assert.equal(validateReading(undefined), 'Please enter valid reading details.');
+  assert.equal(validateReading([]), 'Please enter valid reading details.');
+  assert.equal(validateReading('invalid'), 'Please enter valid reading details.');
+  assert.equal(validateReading({ date: today, slot: 'morning', value: '40' }), null);
+  assert.equal(validateReading({ date: today, slot: 'morning', value: '600' }), null);
+});

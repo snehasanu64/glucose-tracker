@@ -96,6 +96,7 @@ class DbClient {
     this.pgliteInstance = null;
     this.initializedClients = new WeakSet();
     this.initPromise = null;
+    this.pgliteTxQueue = Promise.resolve();
   }
 
   async init(options = {}) {
@@ -230,6 +231,20 @@ class DbClient {
         UNIQUE(user_id, reading_date, slot)
       );
       CREATE INDEX IF NOT EXISTS readings_user_date_idx ON readings(user_id, reading_date);
+      ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+      ALTER TABLE readings ENABLE ROW LEVEL SECURITY;
+      DO $$
+      BEGIN
+        REVOKE ALL ON TABLE users, readings FROM PUBLIC;
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+          REVOKE ALL ON TABLE users, readings FROM anon;
+          REVOKE ALL ON SEQUENCE users_id_seq, readings_id_seq FROM anon;
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+          REVOKE ALL ON TABLE users, readings FROM authenticated;
+          REVOKE ALL ON SEQUENCE users_id_seq, readings_id_seq FROM authenticated;
+        END IF;
+      END $$;
     `;
 
     if (this.mode === 'postgres') {
@@ -276,6 +291,71 @@ class DbClient {
     }
   }
 
+  /**
+   * Executes a callback within an explicit database transaction on a single connection.
+   * Ensures concurrent PGlite transactions serialize instead of interleaving BEGIN/COMMIT.
+   */
+  async withTransaction(fn) {
+    if (this.mode === 'uninitialized') {
+      await this.init();
+    }
+
+    if (this.mode === 'postgres') {
+      const client = await this.pgPool.connect();
+      try {
+        if (this.schema !== 'public' && !this.initializedClients.has(client)) {
+          await client.query(`SET search_path TO "${this.schema}"`);
+          this.initializedClients.add(client);
+        }
+
+        await client.query('BEGIN');
+        const tx = {
+          query: async (text, params = []) => {
+            const res = await client.query(text, params);
+            return {
+              rows: res.rows,
+              rowCount: res.rowCount
+            };
+          }
+        };
+
+        const result = await fn(tx);
+        await client.query('COMMIT');
+        return result;
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
+    }
+
+    const run = async () => {
+      await this.pgliteInstance.query('BEGIN');
+      try {
+        const tx = {
+          query: async (text, params = []) => {
+            const res = await this.pgliteInstance.query(text, params);
+            return {
+              rows: res.rows,
+              rowCount: res.rowCount !== undefined ? res.rowCount : (res.affectedRows ?? res.rows.length)
+            };
+          }
+        };
+        const result = await fn(tx);
+        await this.pgliteInstance.query('COMMIT');
+        return result;
+      } catch (err) {
+        await this.pgliteInstance.query('ROLLBACK').catch(() => {});
+        throw err;
+      }
+    };
+
+    const next = this.pgliteTxQueue.then(run, run);
+    this.pgliteTxQueue = next.catch(() => {});
+    return next;
+  }
+
   getMode() {
     return this.mode;
   }
@@ -312,6 +392,7 @@ class DbClient {
       this.pgliteInstance = null;
     }
     this.initializedClients = new WeakSet();
+    this.pgliteTxQueue = Promise.resolve();
     this.schema = 'public';
     this.isIsolatedTestSchema = false;
     this.mode = 'uninitialized';

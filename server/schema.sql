@@ -21,3 +21,23 @@ CREATE TABLE IF NOT EXISTS readings (
 
 CREATE INDEX IF NOT EXISTS readings_user_date_idx ON readings(user_id, reading_date);
 
+-- Defense-in-depth for Supabase Data API roles while preserving backend postgres access
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE readings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE users NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE readings NO FORCE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+  REVOKE ALL ON TABLE users, readings FROM PUBLIC;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+    REVOKE ALL ON TABLE users, readings FROM anon;
+    REVOKE ALL ON SEQUENCE users_id_seq, readings_id_seq FROM anon;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+    REVOKE ALL ON TABLE users, readings FROM authenticated;
+    REVOKE ALL ON SEQUENCE users_id_seq, readings_id_seq FROM authenticated;
+  END IF;
+END $$;
+
+

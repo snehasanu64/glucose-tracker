@@ -58,6 +58,8 @@ The system provides instant statistical summaries (Daily Highest, Lowest, and Av
 - Passwords hashed using industry-standard **bcrypt** (cost factor 12).
 - Zero plain-text password storage; passwords never returned in API payloads.
 - **JWT (JSON Web Token)** stateless authorization protecting all user-specific routes.
+- **API Hardening**: Helmet HTTP security headers, rate limiting (`express-rate-limit`) on `/api/auth/login` and `/api/auth/register`, 16 KB JSON payload size limit, and production-strict CORS origin allowlisting via `CLIENT_ORIGIN`.
+- **Supabase RLS & Privileges**: Row Level Security (`ENABLE ROW LEVEL SECURITY`) with zero permissive Data API policies and revoked `anon`/`authenticated` privileges, preserving backend `postgres` access.
 - **Strict User Data Isolation**: Every reading and report is partitioned strictly by authenticated `user_id`. Users can never view, update, or delete readings belonging to another user.
 
 ### 2. Blood Glucose Reading Management (CRUD)
@@ -68,7 +70,7 @@ The system provides instant statistical summaries (Daily Highest, Lowest, and Av
 
 ### 3. Strict Input & Business Validation (Frontend & Backend)
 - **Required Value**: `"Please enter a glucose value."`
-- **Integer Value Range**: Whole number strictly between 40 and 600 mg/dL: `"Value must be between 40 and 600 mg/dl."`
+- **Integer Value Range**: Whole number between 40 and 600 mg/dL (inclusive): `"Value must be between 40 and 600 mg/dl."`
 - **Duplicate Slot Prevention**: Only 1 reading permitted per slot per day: `"You already have a(n) [slot] reading for this date."` (enforced on frontend, in route handlers, and via a `UNIQUE(user_id, reading_date, slot)` database constraint).
 - **Daily Quota**: Maximum of 4 readings allowed per calendar day: `"You can add only 4 readings per day."`
 - **No Future Dates**: Disallows selection of future calendar dates: `"Date cannot be in the future."`
@@ -183,7 +185,11 @@ DATABASE_SSL=false
 # DATABASE_SSL=true
 # TEST_SCHEMA=sweety_test
 JWT_SECRET=replace_with_a_long_random_secret
+# Comma-separated allowed frontend origins in production
 CLIENT_ORIGIN=http://localhost:5173
+# Optional security/proxy tuning
+# JSON_BODY_LIMIT=16kb
+# TRUST_PROXY=1
 ```
 > **Important**: `JWT_SECRET` is required to start the backend API server. Always set a long random value in `server/.env` and never commit `server/.env` to source control.
 
@@ -235,18 +241,19 @@ npm run dev
 
 ## 🧪 Running Automated Tests
 
-Sweety includes an automated backend unit and integration test suite with **38 tests** covering:
+Sweety includes an automated backend unit and integration test suite with **44 tests** covering:
 - User registration and login flow
 - Bcrypt password hashing verification and JWT expiry/signature protection
 - Database schema, `CHECK`/`UNIQUE` constraints, `ON DELETE CASCADE`, and seed verification
 - Valid glucose reading creation
 - Range and non-integer value rejections
 - Duplicate slot prevention and chronological slot ordering
-- Maximum 4 readings per day enforcement (plus editing on a full 4-reading day)
+- Maximum 4 readings per day enforcement (sequential and concurrent `POST`/`PUT` requests under transactional locking)
 - Future-date and invalid-date rejections
 - Editing and deleting readings
 - Multi-user data isolation
 - Daily, Month-to-date, and Previous-month report calculations (rounding, month boundaries, leap years, and year transitions)
+- Security headers (Helmet), malformed/oversized JSON handling (`400`/`413`), production CORS allowlisting, and login/registration rate limiting (`429`)
 
 To execute the test suite:
 ```powershell
@@ -258,13 +265,14 @@ npm test
 ```text
 ✔ User Authentication & Authorization Tests (9 tests passing)
 ✔ Database Schema, Constraints, Cascade & Seed Tests (4 tests passing)
-✔ Glucose Readings API Tests (10 tests passing)
+✔ Glucose Readings API Tests (11 tests passing)
 ✔ Reports API Tests (7 tests passing)
-✔ Validation Helper Tests (7 tests passing)
+✔ Security Headers, Rate Limiting, CORS & Payload Limits (4 tests passing)
+✔ Validation Helper Tests (8 tests passing)
 ✔ test/helpers.js (1 test passing)
-ℹ tests 38
-ℹ suites 4
-ℹ pass 38
+ℹ tests 44
+ℹ suites 5
+ℹ pass 44
 ℹ fail 0
 ```
 
@@ -318,7 +326,8 @@ All endpoints accept and return JSON. Authenticated endpoints require the header
 ## 🏗️ Architecture & Design Details
 
 - **Modular Backend Architecture**: Clear separation of database connection pooling (`db.js`), route handlers (`/routes`), validation schemas (`validation.js`), and auth middleware (`auth.js`).
-- **Data Integrity & Consistency**: Enforces integrity at the database layer with check constraints (`value BETWEEN 40 AND 600`) and unique composite indexes (`UNIQUE(user_id, reading_date, slot)`).
+- **Data Integrity & Concurrency Safety**: Enforces integrity at the database layer with check constraints (`value BETWEEN 40 AND 600`), unique composite indexes (`UNIQUE(user_id, reading_date, slot)`), and transactional `SELECT ... FOR UPDATE` row locking in `POST`/`PUT /api/readings` so concurrent requests cannot bypass the 4-readings-per-day quota.
+- **Database & API Security**: Enables PostgreSQL RLS on `users` and `readings` while revoking Data API (`anon`/`authenticated`/`PUBLIC`) table and sequence grants, alongside Helmet headers, JSON payload size limits, production CORS allowlists, and auth rate limiters.
 - **Timezone Safety**: Dates are stored in standard SQL `DATE` format (`YYYY-MM-DD`), preventing timezone shifts from altering patient calendar dates.
 - **Explicit PostgreSQL Connectivity**: Connects via `pg.Pool` (with SSL support via `DATABASE_SSL` / remote host detection and `10000ms` connection timeout) whenever `DATABASE_URL` is configured without silent fallback to embedded storage. Isolated test schemas (`TEST_SCHEMA`) protect production `public` tables during automated tests.
 
