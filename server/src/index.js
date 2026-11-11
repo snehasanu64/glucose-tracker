@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { initDb, pool } from './db.js';
+import { getJwtSecret } from './auth.js';
 import authRoutes from './routes/auth.js';
 import readingRoutes from './routes/readings.js';
 import reportRoutes from './routes/reports.js';
@@ -11,14 +12,20 @@ dotenv.config();
 const app = express();
 
 const clientOrigin = process.env.CLIENT_ORIGIN;
+const allowedOrigins = clientOrigin
+  ? [clientOrigin, 'http://localhost:5173', 'http://127.0.0.1:5173']
+  : ['http://localhost:5173', 'http://127.0.0.1:5173'];
+
 app.use(cors({
-  origin: clientOrigin ? [clientOrigin, 'http://localhost:5173', 'http://127.0.0.1:5173'] : true,
+  origin: allowedOrigins,
   credentials: true
 }));
 
 app.use(express.json());
 
-app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
+app.get('/api/health', (req, res) =>
+  res.json({ status: 'ok', dbEngine: pool.getMode(), timestamp: new Date().toISOString() })
+);
 app.use('/api/auth', authRoutes);
 app.use('/api/readings', readingRoutes);
 app.use('/api/reports', reportRoutes);
@@ -36,6 +43,12 @@ const isTestMode =
   process.argv.some(arg => arg.includes('--test') || arg.includes('.test.'));
 
 if (!isTestMode) {
+  try {
+    getJwtSecret();
+  } catch (err) {
+    console.error(err.message);
+    process.exit(1);
+  }
   initDb()
     .then(() => {
       app.listen(port, () => console.log(`Sweety API listening on port ${port}`));

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { pool } from '../db.js';
 import { requireAuth } from '../auth.js';
-import { SLOT_LABELS, getTodayString, isValidCalendarDate } from '../validation.js';
+import { SLOT_LABELS, SLOT_ORDER_CASE, getTodayString, isValidCalendarDate } from '../validation.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -29,7 +29,7 @@ async function computeReport(req, res, start, end, includeReadings = false) {
       `SELECT id, reading_date::text AS date, slot, value, created_at
        FROM readings
        WHERE user_id = $1 AND reading_date BETWEEN $2 AND $3
-       ORDER BY slot ASC, created_at ASC`,
+       ORDER BY ${SLOT_ORDER_CASE} ASC, created_at ASC`,
       [req.user.id, start, end]
     );
     readings = rows.rows.map(r => ({

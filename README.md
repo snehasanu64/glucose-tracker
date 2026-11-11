@@ -163,9 +163,10 @@ Contents of `server/.env`:
 ```env
 PORT=5000
 DATABASE_URL=postgresql://postgres:your_password@localhost:5432/sweety_glucose
-JWT_SECRET=sweety_super_secret_jwt_key_2026_random_string
+JWT_SECRET=replace_with_a_long_random_secret
 CLIENT_ORIGIN=http://localhost:5173
 ```
+> **Important**: `JWT_SECRET` is required to start the backend API server. Always set a long random value in `server/.env` and never commit `server/.env` to source control.
 
 ### Frontend (`client/.env`)
 Copy `client/.env.example` to `client/.env`:
@@ -183,9 +184,11 @@ VITE_API_URL=http://localhost:5000/api
 ## 🚀 Installation and Running Locally (Windows 11 / macOS / Linux)
 
 ### 1. Install Backend Dependencies & Start Server
-Open a terminal in the project root:
+Open a terminal in the project root, configure `server/.env`, and start the backend:
 ```powershell
 cd server
+Copy-Item .env.example .env
+# Edit server/.env and set a secure random JWT_SECRET (and DATABASE_URL for PostgreSQL)
 npm install
 npm run dev
 ```
@@ -203,6 +206,7 @@ This populates the database with a pre-configured demo account and sample readin
 In a third terminal window:
 ```powershell
 cd client
+Copy-Item .env.example .env
 npm install
 npm run dev
 ```
@@ -212,18 +216,18 @@ npm run dev
 
 ## 🧪 Running Automated Tests
 
-Sweety includes an automated test suite with **31 end-to-end and unit tests** covering:
+Sweety includes an automated backend unit and integration test suite with **38 tests** covering:
 - User registration and login flow
-- Bcrypt password hashing verification
-- Protected route middleware
+- Bcrypt password hashing verification and JWT expiry/signature protection
+- Database schema, `CHECK`/`UNIQUE` constraints, `ON DELETE CASCADE`, and seed verification
 - Valid glucose reading creation
 - Range and non-integer value rejections
-- Duplicate slot prevention
-- Maximum 4 readings per day enforcement
-- Future-date rejections
+- Duplicate slot prevention and chronological slot ordering
+- Maximum 4 readings per day enforcement (plus editing on a full 4-reading day)
+- Future-date and invalid-date rejections
 - Editing and deleting readings
 - Multi-user data isolation
-- Daily, Month-to-date, and Previous-month report calculations
+- Daily, Month-to-date, and Previous-month report calculations (rounding, month boundaries, leap years, and year transitions)
 
 To execute the test suite:
 ```powershell
@@ -234,21 +238,24 @@ npm test
 ### Test Summary
 ```text
 ✔ User Authentication & Authorization Tests (9 tests passing)
-✔ Glucose Readings API Tests (9 tests passing)
-✔ Reports API Tests (5 tests passing)
+✔ Database Schema, Constraints, Cascade & Seed Tests (4 tests passing)
+✔ Glucose Readings API Tests (10 tests passing)
+✔ Reports API Tests (7 tests passing)
 ✔ Validation Helper Tests (7 tests passing)
 ✔ test/helpers.js (1 test passing)
-ℹ tests 31
-ℹ suites 3
-ℹ pass 31
+ℹ tests 38
+ℹ suites 4
+ℹ pass 38
 ℹ fail 0
 ```
+
+> Note: Automated tests default to the in-memory embedded PGlite engine so they can run deterministically without mutating a local database. Set `DATABASE_URL` (without `FORCE_EMBEDDED_DB`) to run against an external PostgreSQL server.
 
 ---
 
 ## 🔑 Demo Login Credentials
 
-You can log in immediately using the seeded account or by clicking **"Auto-fill Demo Credentials"** on the login screen:
+After running `npm run seed` in `server/`, you can log in using the seeded demo account:
 
 - **Email**: `demo@sweety.local`
 - **Password**: `DemoPass123!`
@@ -285,7 +292,7 @@ All endpoints accept and return JSON. Authenticated endpoints require the header
 ### System Health
 | Method | Endpoint | Description | Auth Required |
 |---|---|---|---|
-| `GET` | `/api/health` | Health check endpoint returning `{ status: 'ok' }` | No |
+| `GET` | `/api/health` | Health check endpoint returning `{ status: 'ok', dbEngine, timestamp }` | No |
 
 ---
 

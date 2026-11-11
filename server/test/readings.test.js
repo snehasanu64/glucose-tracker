@@ -114,6 +114,29 @@ describe('Glucose Readings API Tests', () => {
     assert.equal(res.body.error, 'Date cannot be in the future.');
   });
 
+  it('rejects non-integer glucose values, invalid dates, and invalid time slots', async () => {
+    const resDecimal = await req
+      .post('/api/readings')
+      .set('Authorization', `Bearer ${tokenUserA}`)
+      .send({ date: today, slot: 'after_breakfast', value: 120.5 });
+    assert.equal(resDecimal.status, 400);
+    assert.equal(resDecimal.body.error, 'Value must be between 40 and 600 mg/dl.');
+
+    const resInvalidDate = await req
+      .post('/api/readings')
+      .set('Authorization', `Bearer ${tokenUserA}`)
+      .send({ date: '2026-02-30', slot: 'after_breakfast', value: 120 });
+    assert.equal(resInvalidDate.status, 400);
+    assert.equal(resInvalidDate.body.error, 'Please enter a valid date.');
+
+    const resInvalidSlot = await req
+      .post('/api/readings')
+      .set('Authorization', `Bearer ${tokenUserA}`)
+      .send({ date: today, slot: 'midnight_snack', value: 120 });
+    assert.equal(resInvalidSlot.status, 400);
+    assert.equal(resInvalidSlot.body.error, 'Please select a valid time slot.');
+  });
+
   it('rejects duplicate reading for the same time slot on the same day', async () => {
     // We already added 'morning' on 'today' for User A in test 1
     const res = await req
@@ -129,45 +152,52 @@ describe('Glucose Readings API Tests', () => {
     assert.match(res.body.error, /You already have a(n)? Morning \(fasting\) reading for this date\./);
   });
 
-  it('enforces maximum of 4 readings per day', async () => {
+  it('enforces maximum of 4 readings per day and chronological ordering', async () => {
     // User A currently has 1 reading ('morning') on today
-    // Add slot 2 ('after_breakfast')
-    const r2 = await req
-      .post('/api/readings')
-      .set('Authorization', `Bearer ${tokenUserA}`)
-      .send({ date: today, slot: 'after_breakfast', value: 140 });
-    assert.equal(r2.status, 201);
-
-    // Add slot 3 ('after_lunch')
-    const r3 = await req
-      .post('/api/readings')
-      .set('Authorization', `Bearer ${tokenUserA}`)
-      .send({ date: today, slot: 'after_lunch', value: 135 });
-    assert.equal(r3.status, 201);
-
-    // Add slot 4 ('after_dinner')
+    // Add slot 4 ('after_dinner'), slot 3 ('after_lunch'), slot 2 ('after_breakfast') out of order
     const r4 = await req
       .post('/api/readings')
       .set('Authorization', `Bearer ${tokenUserA}`)
       .send({ date: today, slot: 'after_dinner', value: 125 });
     assert.equal(r4.status, 201);
 
-    // Try to add a 5th reading on the same day
+    const r3 = await req
+      .post('/api/readings')
+      .set('Authorization', `Bearer ${tokenUserA}`)
+      .send({ date: today, slot: 'after_lunch', value: 135 });
+    assert.equal(r3.status, 201);
+
+    const r2 = await req
+      .post('/api/readings')
+      .set('Authorization', `Bearer ${tokenUserA}`)
+      .send({ date: today, slot: 'after_breakfast', value: 140 });
+    assert.equal(r2.status, 201);
+
+    // Verify chronological ordering in GET /api/readings
+    const listRes = await req
+      .get(`/api/readings?date=${today}`)
+      .set('Authorization', `Bearer ${tokenUserA}`);
+    assert.equal(listRes.status, 200);
+    assert.deepEqual(
+      listRes.body.map(r => r.slot),
+      ['morning', 'after_breakfast', 'after_lunch', 'after_dinner']
+    );
+
+    // Try to add a 5th reading on the same day (must return exact max-4 error)
     const r5 = await req
       .post('/api/readings')
       .set('Authorization', `Bearer ${tokenUserA}`)
       .send({ date: today, slot: 'morning', value: 110 });
 
-    assert.ok(r5.status === 400 || r5.status === 409);
-    // When count is 4, max 4 check triggers
-    assert.match(r5.body.error, /(You can add only 4 readings per day|You already have)/);
+    assert.equal(r5.status, 400);
+    assert.equal(r5.body.error, 'You can add only 4 readings per day.');
   });
 
-  it('edits an existing reading', async () => {
-    // Fetch User A readings
+  it('edits an existing reading on a full 4-reading day without triggering max or duplicate errors', async () => {
     const listRes = await req
-      .get('/api/readings')
+      .get(`/api/readings?date=${today}`)
       .set('Authorization', `Bearer ${tokenUserA}`);
+    assert.equal(listRes.body.length, 4);
     const reading = listRes.body[0];
 
     const editRes = await req
@@ -182,6 +212,13 @@ describe('Glucose Readings API Tests', () => {
     assert.equal(editRes.status, 200);
     assert.equal(editRes.body.value, 155);
     assert.equal(editRes.body.id, reading.id);
+
+    // Invalid ID check
+    const badIdRes = await req
+      .put('/api/readings/not-a-number')
+      .set('Authorization', `Bearer ${tokenUserA}`)
+      .send({ date: today, slot: 'morning', value: 110 });
+    assert.equal(badIdRes.status, 400);
   });
 
   it('deletes an existing reading', async () => {

@@ -22,18 +22,19 @@ class DbClient {
     let connectedToPostgres = false;
 
     if (connectionString && !process.env.FORCE_EMBEDDED_DB) {
+      const testPool = new PgPool({
+        connectionString,
+        connectionTimeoutMillis: 2000
+      });
       try {
-        const testPool = new PgPool({
-          connectionString,
-          connectionTimeoutMillis: 2000
-        });
         await testPool.query('SELECT 1');
         this.pgPool = testPool;
         this.mode = 'postgres';
         connectedToPostgres = true;
         console.log('Connected to PostgreSQL server successfully.');
       } catch (err) {
-        console.warn(`Could not connect to PostgreSQL server at ${connectionString}.`);
+        await testPool.end().catch(() => {});
+        console.warn('Could not connect to external PostgreSQL server configured in DATABASE_URL:', err.message);
         console.warn('Falling back to local embedded PostgreSQL engine (PGlite)...');
       }
     }
@@ -107,6 +108,10 @@ class DbClient {
         rowCount: res.rowCount !== undefined ? res.rowCount : (res.affectedRows ?? res.rows.length)
       };
     }
+  }
+
+  getMode() {
+    return this.mode;
   }
 
   async end() {

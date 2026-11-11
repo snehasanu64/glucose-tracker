@@ -1,6 +1,8 @@
 import { describe, it, before } from 'node:test';
 import assert from 'node:assert/strict';
 import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import { getJwtSecret } from '../src/auth.js';
 import { getTestApp } from './helpers.js';
 
 describe('User Authentication & Authorization Tests', () => {
@@ -155,19 +157,33 @@ describe('User Authentication & Authorization Tests', () => {
     assert.equal(res.body.error, 'Invalid email or password.');
   });
 
-  it('protects private routes against unauthorized requests', async () => {
+  it('protects private routes against unauthorized, invalid, and expired tokens', async () => {
     const resNoAuth = await req.get('/api/readings');
     assert.equal(resNoAuth.status, 401);
     assert.equal(resNoAuth.body.error, 'Please log in to continue.');
+
+    const resReportNoAuth = await req.get('/api/reports/daily');
+    assert.equal(resReportNoAuth.status, 401);
 
     const resBadToken = await req
       .get('/api/readings')
       .set('Authorization', 'Bearer bad.token.here');
     assert.equal(resBadToken.status, 401);
     assert.equal(resBadToken.body.error, 'Your session has expired. Please log in again.');
+
+    const expiredToken = jwt.sign(
+      { id: 999, email: 'expired@sweety.local', name: 'Expired' },
+      getJwtSecret(),
+      { expiresIn: '-10s' }
+    );
+    const resExpired = await req
+      .get('/api/readings')
+      .set('Authorization', `Bearer ${expiredToken}`);
+    assert.equal(resExpired.status, 401);
+    assert.equal(resExpired.body.error, 'Your session has expired. Please log in again.');
   });
 
-  it('allows access to protected routes with a valid JWT token', async () => {
+  it('generates verifiable JWT tokens and allows access to protected routes', async () => {
     const email = `test_me_${Date.now()}@sweety.local`;
     const regRes = await req
       .post('/api/auth/register')
@@ -176,7 +192,11 @@ describe('User Authentication & Authorization Tests', () => {
         email,
         password: 'ValidPassword123!'
       });
-    const { token } = regRes.body;
+    const { token, user } = regRes.body;
+
+    const decoded = jwt.verify(token, getJwtSecret());
+    assert.equal(decoded.id, user.id);
+    assert.equal(decoded.email, email);
 
     const meRes = await req
       .get('/api/auth/me')

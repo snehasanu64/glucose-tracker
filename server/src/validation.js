@@ -18,6 +18,21 @@ export const SLOT_MAP = {
   'After dinner': 'after_dinner'
 };
 
+export const SLOT_ORDER_CASE = `CASE slot
+  WHEN 'morning' THEN 1
+  WHEN 'after_breakfast' THEN 2
+  WHEN 'after_lunch' THEN 3
+  WHEN 'after_dinner' THEN 4
+  ELSE 5
+END`;
+
+export function formatDuplicateSlotError(slot) {
+  const normalizedSlot = SLOT_MAP[slot] || slot;
+  const label = SLOT_LABELS[normalizedSlot] || normalizedSlot;
+  const article = /^[aeiou]/i.test(label) ? 'an' : 'a';
+  return `You already have ${article} ${label} reading for this date.`;
+}
+
 export function getTodayString() {
   const today = new Date();
   return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
@@ -40,8 +55,18 @@ export function isValidCalendarDate(dateStr) {
 }
 
 export function validateReading({ date, slot, value }) {
-  if (value === undefined || value === null || (typeof value === 'string' && value.trim() === '')) {
+  if (value === undefined || value === null) {
     return 'Please enter a glucose value.';
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed === '') {
+      return 'Please enter a glucose value.';
+    }
+    if (!/^-?\d+$/.test(trimmed)) {
+      return 'Value must be between 40 and 600 mg/dl.';
+    }
   }
 
   const num = Number(value);

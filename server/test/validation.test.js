@@ -28,6 +28,8 @@ test('Validation: rejects values outside 40–600 mg/dl', () => {
 test('Validation: rejects non-integer values', () => {
   assert.equal(validateReading({ date: today, slot: 'morning', value: 120.5 }), 'Value must be between 40 and 600 mg/dl.');
   assert.equal(validateReading({ date: today, slot: 'morning', value: '110.2' }), 'Value must be between 40 and 600 mg/dl.');
+  assert.equal(validateReading({ date: today, slot: 'morning', value: '120.0' }), 'Value must be between 40 and 600 mg/dl.');
+  assert.equal(validateReading({ date: today, slot: 'morning', value: '1e2' }), 'Value must be between 40 and 600 mg/dl.');
   assert.equal(validateReading({ date: today, slot: 'morning', value: 'abc' }), 'Value must be between 40 and 600 mg/dl.');
   assert.equal(validateReading({ date: today, slot: 'morning', value: true }), 'Value must be between 40 and 600 mg/dl.');
 });

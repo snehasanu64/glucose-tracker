@@ -3,7 +3,6 @@ import {
   Activity,
   HeartPulse,
   Calendar,
-  Plus,
   Trash2,
   Edit2,
   TrendingUp,
@@ -12,11 +11,8 @@ import {
   X,
   AlertCircle,
   CheckCircle,
-  ArrowRight,
   Clock,
-  ChevronRight,
-  Layers,
-  Sparkles
+  Layers
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -68,6 +64,9 @@ export default function App() {
   const [prevMonthReport, setPrevMonthReport] = useState(null);
   const [dataLoading, setDataLoading] = useState(false);
 
+  // History filter
+  const [slotFilter, setSlotFilter] = useState('all');
+
   // Entry Form state
   const [entryForm, setEntryForm] = useState({
     date: getTodayString(),
@@ -93,13 +92,35 @@ export default function App() {
     }
   }, [successMessage]);
 
+  const handleLogout = () => {
+    const todayStr = getTodayString();
+    localStorage.removeItem('sweety_token');
+    localStorage.removeItem('sweety_user');
+    setToken(null);
+    setUser(null);
+    setActiveTab('dashboard');
+    setSlotFilter('all');
+    setSelectedDate(todayStr);
+    setReadings([]);
+    setDailyReport(null);
+    setMtdReport(null);
+    setPrevMonthReport(null);
+    setEditingId(null);
+    setDeleteModalItem(null);
+    setEntryForm({ date: todayStr, slot: 'morning', value: '' });
+    setAuthMode('login');
+    setAuthForm({ name: '', email: '', password: '' });
+    setErrorMessage('');
+    setSuccessMessage('');
+  };
+
   // Load Dashboard Data
   const loadDashboardData = async (date) => {
     if (!token) return;
     setDataLoading(true);
     try {
       const [readingsRes, dailyRes, mtdRes, prevRes] = await Promise.all([
-        api.get('/readings'),
+        api.get('/readings', { params: { limit: 200 } }),
         api.get('/reports/daily', { params: { date } }),
         api.get('/reports/month-to-date', { params: { date } }),
         api.get('/reports/previous-month', { params: { date } })
@@ -126,17 +147,42 @@ export default function App() {
     }
   }, [token, selectedDate]);
 
-  // Auth Submit
+  // Auth Validation & Submit
+  const validateAuthClientSide = () => {
+    if (authMode === 'register' && !authForm.name.trim()) {
+      return 'Please enter your name.';
+    }
+    if (!authForm.email.trim()) {
+      return 'Please enter your email address.';
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(authForm.email.trim())) {
+      return 'Please enter a valid email address.';
+    }
+    if (!authForm.password) {
+      return 'Please enter a password.';
+    }
+    if (authMode === 'register' && authForm.password.length < 8) {
+      return 'Password must be at least 8 characters.';
+    }
+    return null;
+  };
+
   const handleAuthSubmit = async (e) => {
     e.preventDefault();
     setErrorMessage('');
-    setAuthBusy(true);
 
+    const authErr = validateAuthClientSide();
+    if (authErr) {
+      setErrorMessage(authErr);
+      return;
+    }
+
+    setAuthBusy(true);
     try {
       const endpoint = authMode === 'login' ? '/auth/login' : '/auth/register';
       const payload = authMode === 'login'
-        ? { email: authForm.email, password: authForm.password }
-        : { name: authForm.name, email: authForm.email, password: authForm.password };
+        ? { email: authForm.email.trim(), password: authForm.password }
+        : { name: authForm.name.trim(), email: authForm.email.trim(), password: authForm.password };
 
       const res = await api.post(endpoint, payload);
       const { user: authedUser, token: authToken } = res.data;
@@ -145,6 +191,8 @@ export default function App() {
       localStorage.setItem('sweety_user', JSON.stringify(authedUser));
       setToken(authToken);
       setUser(authedUser);
+      setActiveTab('dashboard');
+      setAuthForm({ name: '', email: '', password: '' });
       setSuccessMessage(`Welcome, ${authedUser.name}!`);
     } catch (err) {
       setErrorMessage(err.response?.data?.error || 'Authentication failed. Please try again.');
@@ -153,36 +201,25 @@ export default function App() {
     }
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem('sweety_token');
-    localStorage.removeItem('sweety_user');
-    setToken(null);
-    setUser(null);
-    setReadings([]);
-    setDailyReport(null);
-    setMtdReport(null);
-    setPrevMonthReport(null);
-  };
-
-  const handleFillDemo = () => {
-    setAuthMode('login');
-    setAuthForm({
-      name: '',
-      email: 'demo@sweety.local',
-      password: 'DemoPass123!'
-    });
-    setErrorMessage('');
-  };
-
   // Reading Form Client Validation
   const validateFormClientSide = () => {
-    if (entryForm.value === undefined || entryForm.value === null || String(entryForm.value).trim() === '') {
+    const rawVal = entryForm.value;
+    if (rawVal === undefined || rawVal === null || String(rawVal).trim() === '') {
       return 'Please enter a glucose value.';
     }
 
-    const num = Number(entryForm.value);
-    if (!Number.isInteger(num) || num < 40 || num > 600 || isNaN(num)) {
+    const trimmed = String(rawVal).trim();
+    if (!/^-?\d+$/.test(trimmed)) {
       return 'Value must be between 40 and 600 mg/dl.';
+    }
+
+    const num = Number(trimmed);
+    if (!Number.isInteger(num) || num < 40 || num > 600) {
+      return 'Value must be between 40 and 600 mg/dl.';
+    }
+
+    if (!entryForm.date) {
+      return 'Please enter a valid date.';
     }
 
     const todayStr = getTodayString();
@@ -190,19 +227,18 @@ export default function App() {
       return 'Date cannot be in the future.';
     }
 
-    // Check duplicate slot
+    const existingOnDate = readings.filter(r => r.date === entryForm.date && r.id !== editingId);
+    if (existingOnDate.length >= 4) {
+      return 'You can add only 4 readings per day.';
+    }
+
     const slotLabelObj = TIME_SLOTS.find(s => s.value === entryForm.slot);
     const slotLabel = slotLabelObj ? slotLabelObj.label : entryForm.slot;
     const article = /^[aeiou]/i.test(slotLabel) ? 'an' : 'a';
 
-    const existingOnDate = readings.filter(r => r.date === entryForm.date && r.id !== editingId);
     const duplicate = existingOnDate.find(r => r.slot === entryForm.slot);
     if (duplicate) {
       return `You already have ${article} ${slotLabel} reading for this date.`;
-    }
-
-    if (existingOnDate.length >= 4) {
-      return 'You can add only 4 readings per day.';
     }
 
     return null;
@@ -224,7 +260,7 @@ export default function App() {
       const payload = {
         date: entryForm.date,
         slot: entryForm.slot,
-        value: Number(entryForm.value)
+        value: Number(String(entryForm.value).trim())
       };
 
       if (editingId) {
@@ -282,6 +318,10 @@ export default function App() {
     try {
       await api.delete(`/readings/${deleteModalItem.id}`);
       setSuccessMessage('Reading deleted successfully.');
+      if (editingId === deleteModalItem.id) {
+        setEditingId(null);
+        setEntryForm({ date: selectedDate, slot: 'morning', value: '' });
+      }
       setDeleteModalItem(null);
       await loadDashboardData(selectedDate);
     } catch (err) {
@@ -291,6 +331,12 @@ export default function App() {
     }
   };
 
+  // Filtered readings for history
+  const filteredHistory = useMemo(() => {
+    if (slotFilter === 'all') return readings;
+    return readings.filter(r => r.slot === slotFilter);
+  }, [readings, slotFilter]);
+
   // Trend chart data for selected month
   const chartData = useMemo(() => {
     const selectedMonth = selectedDate.slice(0, 7);
@@ -299,7 +345,7 @@ export default function App() {
       .slice()
       .reverse()
       .map(r => ({
-        day: r.date.slice(8),
+        day: `${r.date.slice(8)} (${(TIME_SLOTS.find(s => s.value === r.slot)?.label || r.slot).split(' ')[0]})`,
         date: r.date,
         value: r.value,
         slot: TIME_SLOTS.find(s => s.value === r.slot)?.label || r.slot
@@ -316,7 +362,7 @@ export default function App() {
               <HeartPulse size={26} />
             </div>
             <div>
-              <p className="brand-subtitle">Health & Glucose Journal</p>
+              <p className="brand-subtitle">Health &amp; Glucose Journal</p>
               <h2 className="brand-title">Sweety Tracker</h2>
             </div>
           </div>
@@ -329,7 +375,7 @@ export default function App() {
           </p>
 
           {errorMessage && (
-            <div className="alert-banner error">
+            <div className="alert-banner error" role="alert">
               <span>{errorMessage}</span>
               <button className="alert-close" onClick={() => setErrorMessage('')} aria-label="Dismiss error">
                 <X size={16} />
@@ -338,7 +384,7 @@ export default function App() {
           )}
 
           {successMessage && (
-            <div className="alert-banner success">
+            <div className="alert-banner success" role="status">
               <span>{successMessage}</span>
               <button className="alert-close" onClick={() => setSuccessMessage('')} aria-label="Dismiss message">
                 <X size={16} />
@@ -346,7 +392,7 @@ export default function App() {
             </div>
           )}
 
-          <form onSubmit={handleAuthSubmit}>
+          <form onSubmit={handleAuthSubmit} noValidate>
             {authMode === 'register' && (
               <div className="form-group">
                 <label className="form-label" htmlFor="register-name">Full Name</label>
@@ -397,7 +443,7 @@ export default function App() {
           <div style={{ marginTop: '20px', textAlign: 'center', fontSize: '13px' }}>
             {authMode === 'login' ? (
               <p>
-                Don't have an account?{' '}
+                Don&apos;t have an account?{' '}
                 <button
                   type="button"
                   style={{ background: 'none', border: 'none', color: '#2563eb', fontWeight: 'bold' }}
@@ -426,18 +472,10 @@ export default function App() {
             )}
           </div>
 
-          <div style={{ marginTop: '24px', paddingTop: '16px', borderTop: '1px solid #e2e8f0', textAlign: 'center' }}>
-            <p style={{ fontSize: '12px', color: '#64748b', marginBottom: '8px' }}>
-              Want to test the app right away?
+          <div style={{ marginTop: '20px', paddingTop: '14px', borderTop: '1px solid #e2e8f0', textAlign: 'center' }}>
+            <p style={{ fontSize: '12px', color: '#64748b' }}>
+              For local evaluation, seed the database with <code>npm run seed</code> (see README for demo credentials).
             </p>
-            <button
-              type="button"
-              className="btn btn-secondary btn-full"
-              style={{ fontSize: '12px' }}
-              onClick={handleFillDemo}
-            >
-              <Sparkles size={15} style={{ color: '#0d9488' }} /> Auto-fill Demo Credentials
-            </button>
           </div>
         </div>
       </div>
@@ -459,9 +497,10 @@ export default function App() {
           </div>
         </div>
 
-        <nav className="sidebar-nav">
+        <nav className="sidebar-nav" aria-label="Main Navigation">
           <div className="nav-heading">Main Navigation</div>
           <button
+            type="button"
             className={`nav-link ${activeTab === 'dashboard' ? 'active' : ''}`}
             onClick={() => setActiveTab('dashboard')}
           >
@@ -469,6 +508,7 @@ export default function App() {
             <span>Dashboard</span>
           </button>
           <button
+            type="button"
             className={`nav-link ${activeTab === 'history' ? 'active' : ''}`}
             onClick={() => setActiveTab('history')}
           >
@@ -476,11 +516,12 @@ export default function App() {
             <span>Readings History</span>
           </button>
           <button
+            type="button"
             className={`nav-link ${activeTab === 'reports' ? 'active' : ''}`}
             onClick={() => setActiveTab('reports')}
           >
             <BarChart2 size={18} />
-            <span>Analytics & Reports</span>
+            <span>Analytics &amp; Reports</span>
           </button>
         </nav>
 
@@ -493,7 +534,7 @@ export default function App() {
               <div className="user-name">{user?.name || 'User'}</div>
               <div className="user-email">{user?.email}</div>
             </div>
-            <button className="btn-icon" onClick={handleLogout} title="Log Out" aria-label="Log Out">
+            <button type="button" className="btn-icon" onClick={handleLogout} title="Log Out" aria-label="Log Out">
               <LogOut size={16} />
             </button>
           </div>
@@ -508,7 +549,7 @@ export default function App() {
           </div>
           <span style={{ fontWeight: 800, fontSize: '18px' }}>Sweety</span>
         </div>
-        <button className="btn-icon" onClick={handleLogout} title="Log Out" aria-label="Log Out">
+        <button type="button" className="btn-icon" onClick={handleLogout} title="Log Out" aria-label="Log Out">
           <LogOut size={18} />
         </button>
       </header>
@@ -522,25 +563,38 @@ export default function App() {
             <p>Monitor your blood glucose entries and health summaries.</p>
           </div>
 
-          <div className="date-selector-pill">
-            <Calendar size={18} />
-            <input
-              type="date"
-              id="global-date-selector"
-              max={getTodayString()}
-              value={selectedDate}
-              onChange={(e) => {
-                setSelectedDate(e.target.value);
-                setEntryForm((prev) => ({ ...prev, date: e.target.value }));
-              }}
-              title="Select calendar date"
-            />
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+            {dataLoading && (
+              <div className="loading-indicator" role="status" aria-live="polite">
+                <span className="spinner" aria-hidden="true" />
+                <span>Syncing…</span>
+              </div>
+            )}
+
+            <label className="date-selector-pill" htmlFor="global-date-selector">
+              <Calendar size={18} />
+              <input
+                type="date"
+                id="global-date-selector"
+                max={getTodayString()}
+                value={selectedDate}
+                onChange={(e) => {
+                  const newDate = e.target.value;
+                  if (!newDate) return;
+                  setSelectedDate(newDate);
+                  if (!editingId) {
+                    setEntryForm((prev) => ({ ...prev, date: newDate }));
+                  }
+                }}
+                aria-label="Select calendar date"
+              />
+            </label>
           </div>
         </div>
 
         {/* Banners */}
         {errorMessage && (
-          <div className="alert-banner error">
+          <div className="alert-banner error" role="alert">
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <AlertCircle size={18} />
               <span>{errorMessage}</span>
@@ -552,7 +606,7 @@ export default function App() {
         )}
 
         {successMessage && (
-          <div className="alert-banner success">
+          <div className="alert-banner success" role="status">
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <CheckCircle size={18} />
               <span>{successMessage}</span>
@@ -610,7 +664,7 @@ export default function App() {
               {dailyReport?.count || 0}
               <small>/ 4 slots</small>
             </div>
-            <div className="stat-subtext">Recorded today</div>
+            <div className="stat-subtext">Recorded on {selectedDate}</div>
           </div>
         </section>
 
@@ -628,7 +682,7 @@ export default function App() {
                 </div>
               </div>
 
-              <form onSubmit={handleSaveReading}>
+              <form onSubmit={handleSaveReading} noValidate>
                 <div className="form-group">
                   <label className="form-label" htmlFor="reading-date">Date</label>
                   <input
@@ -724,6 +778,7 @@ export default function App() {
                         </div>
                         <div className="reading-actions">
                           <button
+                            type="button"
                             className="btn-icon"
                             onClick={() => handleStartEdit(reading)}
                             title="Edit reading"
@@ -732,6 +787,7 @@ export default function App() {
                             <Edit2 size={16} />
                           </button>
                           <button
+                            type="button"
                             className="btn-icon danger"
                             onClick={() => setDeleteModalItem(reading)}
                             title="Delete reading"
@@ -751,7 +807,7 @@ export default function App() {
                   </div>
                   <div className="empty-title">No readings for this date</div>
                   <p className="empty-text">
-                    You haven't logged any glucose values for {selectedDate}. Use the form on the left to add your first reading.
+                    You haven&apos;t logged any glucose values for {selectedDate}. Use the form to add your first reading.
                   </p>
                 </div>
               )}
@@ -762,65 +818,96 @@ export default function App() {
         {/* Tab 2: Full Readings History */}
         {activeTab === 'history' && (
           <div className="panel-card">
-            <div className="panel-header">
+            <div className="panel-header" style={{ flexWrap: 'wrap', gap: '12px' }}>
               <div>
                 <div className="panel-tag">LOG HISTORY</div>
                 <h2 className="panel-title" style={{ marginTop: '6px' }}>All Logged Readings</h2>
               </div>
-              <div style={{ fontSize: '13px', color: '#64748b' }}>
-                Total: {readings.length} reading{readings.length === 1 ? '' : 's'}
+
+              <div className="filter-controls">
+                <label htmlFor="slot-filter" style={{ fontSize: '13px', color: '#64748b', fontWeight: 600 }}>
+                  Filter slot:
+                </label>
+                <select
+                  id="slot-filter"
+                  className="filter-select"
+                  value={slotFilter}
+                  onChange={(e) => setSlotFilter(e.target.value)}
+                >
+                  <option value="all">All Time Slots ({readings.length})</option>
+                  {TIME_SLOTS.map((s) => (
+                    <option key={s.value} value={s.value}>
+                      {s.label}
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
 
-            {readings.length > 0 ? (
-              <div className="readings-list">
-                {readings.map((reading) => (
-                  <div key={reading.id} className="reading-item">
-                    <div className="reading-left">
-                      <span className={`slot-indicator ${reading.slot}`} />
-                      <div>
-                        <div className="slot-title">{reading.slotLabel || reading.slot}</div>
-                        <div className="slot-date">{reading.date}</div>
-                      </div>
-                    </div>
-
-                    <div className="reading-right">
-                      <div className="reading-val">
-                        {reading.value} <small>mg/dL</small>
-                      </div>
-                      <div className="reading-actions">
-                        <button
-                          className="btn-icon"
-                          onClick={() => {
-                            handleStartEdit(reading);
-                            setActiveTab('dashboard');
-                          }}
-                          title="Edit reading"
-                          aria-label="Edit reading"
-                        >
-                          <Edit2 size={16} />
-                        </button>
-                        <button
-                          className="btn-icon danger"
-                          onClick={() => setDeleteModalItem(reading)}
-                          title="Delete reading"
-                          aria-label="Delete reading"
-                        >
-                          <Trash2 size={16} />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                ))}
+            {filteredHistory.length > 0 ? (
+              <div className="readings-table-wrap">
+                <table className="readings-table">
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Time Slot</th>
+                      <th>Glucose Value</th>
+                      <th style={{ textAlign: 'right' }}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredHistory.map((reading) => (
+                      <tr key={reading.id}>
+                        <td>{reading.date}</td>
+                        <td>
+                          <span className="slot-badge">
+                            <span className={`slot-indicator ${reading.slot}`} />
+                            {reading.slotLabel || reading.slot}
+                          </span>
+                        </td>
+                        <td>
+                          <strong>{reading.value}</strong> <span style={{ fontSize: '12px', color: '#64748b' }}>mg/dL</span>
+                        </td>
+                        <td style={{ textAlign: 'right' }}>
+                          <div className="reading-actions" style={{ justifyContent: 'flex-end' }}>
+                            <button
+                              type="button"
+                              className="btn-icon"
+                              onClick={() => {
+                                handleStartEdit(reading);
+                                setActiveTab('dashboard');
+                              }}
+                              title="Edit reading"
+                              aria-label={`Edit ${reading.slotLabel || reading.slot} reading on ${reading.date}`}
+                            >
+                              <Edit2 size={16} />
+                            </button>
+                            <button
+                              type="button"
+                              className="btn-icon danger"
+                              onClick={() => setDeleteModalItem(reading)}
+                              title="Delete reading"
+                              aria-label={`Delete ${reading.slotLabel || reading.slot} reading on ${reading.date}`}
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             ) : (
               <div className="empty-state">
                 <div className="empty-icon-circle">
                   <Activity size={24} />
                 </div>
-                <div className="empty-title">No readings logged yet</div>
+                <div className="empty-title">No readings found</div>
                 <p className="empty-text">
-                  Your glucose history is currently empty. Head over to the Dashboard to add your first reading!
+                  {slotFilter === 'all'
+                    ? 'Your glucose history is currently empty. Head over to the Dashboard to add your first reading!'
+                    : 'No readings recorded for the selected time slot filter.'}
                 </p>
               </div>
             )}
@@ -830,8 +917,45 @@ export default function App() {
         {/* Tab 3: Analytics & Reports View */}
         {activeTab === 'reports' && (
           <div>
-            {/* Reports Comparison Grid */}
+            {/* Reports Comparison Grid (Daily, MTD, Previous Month) */}
             <div className="reports-grid">
+              {/* Daily Report */}
+              <div className="panel-card">
+                <div className="panel-header">
+                  <div>
+                    <div className="panel-tag">DAILY SUMMARY</div>
+                    <h2 className="panel-title" style={{ marginTop: '6px' }}>Daily Report</h2>
+                  </div>
+                  <span style={{ fontSize: '12px', color: '#64748b' }}>{selectedDate}</span>
+                </div>
+
+                {dailyReport?.count ? (
+                  <div className="report-summary-box">
+                    <div className="report-stat-row">
+                      <span className="name">Total Readings:</span>
+                      <span className="val">{dailyReport.count}</span>
+                    </div>
+                    <div className="report-stat-row">
+                      <span className="name">Average Glucose:</span>
+                      <span className="val">{Number(dailyReport.average).toFixed(1)} mg/dL</span>
+                    </div>
+                    <div className="report-stat-row">
+                      <span className="name">Highest Reading:</span>
+                      <span className="val">{dailyReport.highest} mg/dL</span>
+                    </div>
+                    <div className="report-stat-row">
+                      <span className="name">Lowest Reading:</span>
+                      <span className="val">{dailyReport.lowest} mg/dL</span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="empty-state" style={{ padding: '24px 12px' }}>
+                    <div className="empty-title">No readings on {selectedDate}</div>
+                    <p className="empty-text">Select another date or add a reading on the Dashboard.</p>
+                  </div>
+                )}
+              </div>
+
               {/* Month-to-date Report */}
               <div className="panel-card">
                 <div className="panel-header">
@@ -844,24 +968,31 @@ export default function App() {
                   </span>
                 </div>
 
-                <div className="report-summary-box">
-                  <div className="report-stat-row">
-                    <span className="name">Total Readings:</span>
-                    <span className="val">{mtdReport?.count || 0}</span>
+                {mtdReport?.count ? (
+                  <div className="report-summary-box">
+                    <div className="report-stat-row">
+                      <span className="name">Total Readings:</span>
+                      <span className="val">{mtdReport.count}</span>
+                    </div>
+                    <div className="report-stat-row">
+                      <span className="name">Average Glucose:</span>
+                      <span className="val">{Number(mtdReport.average).toFixed(1)} mg/dL</span>
+                    </div>
+                    <div className="report-stat-row">
+                      <span className="name">Highest Reading:</span>
+                      <span className="val">{mtdReport.highest} mg/dL</span>
+                    </div>
+                    <div className="report-stat-row">
+                      <span className="name">Lowest Reading:</span>
+                      <span className="val">{mtdReport.lowest} mg/dL</span>
+                    </div>
                   </div>
-                  <div className="report-stat-row">
-                    <span className="name">Average Glucose:</span>
-                    <span className="val">{mtdReport?.average !== null && mtdReport?.average !== undefined ? `${mtdReport.average} mg/dL` : '—'}</span>
+                ) : (
+                  <div className="empty-state" style={{ padding: '24px 12px' }}>
+                    <div className="empty-title">No readings this month</div>
+                    <p className="empty-text">No entries found between {mtdReport?.startDate} and {mtdReport?.endDate}.</p>
                   </div>
-                  <div className="report-stat-row">
-                    <span className="name">Highest Reading:</span>
-                    <span className="val">{mtdReport?.highest !== null && mtdReport?.highest !== undefined ? `${mtdReport.highest} mg/dL` : '—'}</span>
-                  </div>
-                  <div className="report-stat-row">
-                    <span className="name">Lowest Reading:</span>
-                    <span className="val">{mtdReport?.lowest !== null && mtdReport?.lowest !== undefined ? `${mtdReport.lowest} mg/dL` : '—'}</span>
-                  </div>
-                </div>
+                )}
               </div>
 
               {/* Previous-Month Report */}
@@ -869,31 +1000,38 @@ export default function App() {
                 <div className="panel-header">
                   <div>
                     <div className="panel-tag">PERIOD REPORT</div>
-                    <h2 className="panel-title" style={{ marginTop: '6px' }}>Previous Calendar Month</h2>
+                    <h2 className="panel-title" style={{ marginTop: '6px' }}>Previous Month</h2>
                   </div>
                   <span style={{ fontSize: '12px', color: '#64748b' }}>
                     {prevMonthReport?.startDate} → {prevMonthReport?.endDate}
                   </span>
                 </div>
 
-                <div className="report-summary-box">
-                  <div className="report-stat-row">
-                    <span className="name">Total Readings:</span>
-                    <span className="val">{prevMonthReport?.count || 0}</span>
+                {prevMonthReport?.count ? (
+                  <div className="report-summary-box">
+                    <div className="report-stat-row">
+                      <span className="name">Total Readings:</span>
+                      <span className="val">{prevMonthReport.count}</span>
+                    </div>
+                    <div className="report-stat-row">
+                      <span className="name">Average Glucose:</span>
+                      <span className="val">{Number(prevMonthReport.average).toFixed(1)} mg/dL</span>
+                    </div>
+                    <div className="report-stat-row">
+                      <span className="name">Highest Reading:</span>
+                      <span className="val">{prevMonthReport.highest} mg/dL</span>
+                    </div>
+                    <div className="report-stat-row">
+                      <span className="name">Lowest Reading:</span>
+                      <span className="val">{prevMonthReport.lowest} mg/dL</span>
+                    </div>
                   </div>
-                  <div className="report-stat-row">
-                    <span className="name">Average Glucose:</span>
-                    <span className="val">{prevMonthReport?.average !== null && prevMonthReport?.average !== undefined ? `${prevMonthReport.average} mg/dL` : '—'}</span>
+                ) : (
+                  <div className="empty-state" style={{ padding: '24px 12px' }}>
+                    <div className="empty-title">No readings last month</div>
+                    <p className="empty-text">No entries found for {prevMonthReport?.startDate} to {prevMonthReport?.endDate}.</p>
                   </div>
-                  <div className="report-stat-row">
-                    <span className="name">Highest Reading:</span>
-                    <span className="val">{prevMonthReport?.highest !== null && prevMonthReport?.highest !== undefined ? `${prevMonthReport.highest} mg/dL` : '—'}</span>
-                  </div>
-                  <div className="report-stat-row">
-                    <span className="name">Lowest Reading:</span>
-                    <span className="val">{prevMonthReport?.lowest !== null && prevMonthReport?.lowest !== undefined ? `${prevMonthReport.lowest} mg/dL` : '—'}</span>
-                  </div>
-                </div>
+                )}
               </div>
             </div>
 
@@ -921,7 +1059,7 @@ export default function App() {
                           boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)'
                         }}
                         formatter={(val) => [`${val} mg/dL`, 'Glucose']}
-                        labelFormatter={(day) => `Day: ${day}`}
+                        labelFormatter={(label, payload) => payload?.[0]?.payload?.date ? `${payload[0].payload.date} · ${payload[0].payload.slot}` : label}
                       />
                       <Line
                         type="monotone"
@@ -983,6 +1121,7 @@ export default function App() {
       {/* Mobile Bottom Tab Navigation */}
       <nav className="mobile-bottom-tabs" aria-label="Mobile Navigation">
         <button
+          type="button"
           className={`mobile-tab-btn ${activeTab === 'dashboard' ? 'active' : ''}`}
           onClick={() => setActiveTab('dashboard')}
         >
@@ -990,6 +1129,7 @@ export default function App() {
           <span>Dashboard</span>
         </button>
         <button
+          type="button"
           className={`mobile-tab-btn ${activeTab === 'history' ? 'active' : ''}`}
           onClick={() => setActiveTab('history')}
         >
@@ -997,6 +1137,7 @@ export default function App() {
           <span>History</span>
         </button>
         <button
+          type="button"
           className={`mobile-tab-btn ${activeTab === 'reports' ? 'active' : ''}`}
           onClick={() => setActiveTab('reports')}
         >
